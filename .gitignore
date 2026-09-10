@@ -1,0 +1,16 @@
+# Entornos virtuales y Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Datos locales pesados (opcional si son muy grandes, 
+# aunque si tu CSV de speed dating pesa poco puedes dejarlo, 
+# pero por norma general los datos crudos no se suben al repositorio)
+data/raw/*
+!data/raw/.gitkeep
+
+# Volúmenes de Docker / Bases de datos locales
+postgres_data/
+minio_data/
+metabase_data/
