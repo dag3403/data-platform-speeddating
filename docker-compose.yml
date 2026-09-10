@@ -1,17 +1,17 @@
+name: ${PROJECT_NAME:-dpl}
+
 networks:
   dpl_net:
-    driver: bridge
 
 volumes:
   minio_data:
   postgres_data:
   metabase_data:
 
+
 services:
-  # 1. Almacenamiento de objetos (Data Lake - S3 compatible)
   minio:
     image: ${MINIO_IMAGE}
-    container_name: dpl-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -21,14 +21,40 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
-    networks:
-      - dpl_net
+    networks: [dpl_net]
     profiles: ["base", "seed"]
 
-  # 2. Spark Master (Coordinador del clúster de procesamiento)
+  mc:
+    image: ${MC_IMAGE}
+    depends_on:
+      - minio
+    entrypoint: /bin/sh
+    command: -lc "
+      sleep 5 &&
+      mc alias set dpl http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+      mc mb -p dpl/dpl || true &&
+      mc cp --recursive /seed/raw/ dpl/dpl/raw/ || true"
+    volumes:
+      - ./data:/seed:ro
+    networks: [dpl_net]
+    profiles: ["seed"]
+
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d
+    networks: [dpl_net]
+    profiles: ["base", "viz"]
+
   spark-master:
     image: ${SPARK_IMAGE}
-    container_name: dpl-spark-master
     environment:
       - SPARK_MODE=master
       - SPARK_MASTER_HOST=spark-master
@@ -41,35 +67,47 @@ services:
       - "8080:8080"
     volumes:
       - ./spark/jobs:/opt/bitnami/spark/jobs:ro
-    networks:
-      - dpl_net
+    networks: [dpl_net]
     depends_on:
       - minio
     profiles: ["base"]
 
-  # 3. Spark Worker 1 (Ejecutor de tareas de procesamiento)
   spark-worker-1:
     image: ${SPARK_IMAGE}
-    container_name: dpl-spark-worker-1
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
       - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_MEMORY=4G
       - SPARK_PACKAGES=org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.3
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
       - AWS_DEFAULT_REGION=us-east-1
-    networks:
-      - dpl_net
+    mem_limit: 4g #añadido por mi
+    networks: [dpl_net]
     depends_on:
       - spark-master
     profiles: ["base"]
 
-  # 4. Jupyter Notebooks (Entorno de desarrollo y pruebas PySpark / ML)
+  spark-worker-2:
+    image: ${SPARK_IMAGE}
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_PACKAGES=org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.3
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - AWS_DEFAULT_REGION=us-east-1
+    mem_limit: 4g #añadido por mi
+    networks: [dpl_net]
+    depends_on:
+      - spark-master
+    profiles: ["base"]
+
   jupyter:
     image: ${JUPYTER_IMAGE}
-    container_name: dpl-jupyter
     environment:
       - PYSPARK_SUBMIT_ARGS=--packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 --master spark://spark-master:7077 pyspark-shell
       - JUPYTER_TOKEN=${JUPYTER_TOKEN}
@@ -81,61 +119,22 @@ services:
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./spark/jobs:/home/jovyan/jobs:ro
-    networks:
-      - dpl_net
+    networks: [dpl_net]
     depends_on:
       - spark-master
       - minio
     profiles: ["base"]
 
-  # 5. Base de datos PostgreSQL (Capa de Serving para resultados/predicciones)
-  postgres:
-    image: ${POSTGRES_IMAGE}
-    container_name: dpl-postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./postgres/initdb:/docker-entrypoint-initdb.d
-    networks:
-      - dpl_net
-    profiles: ["base", "viz"]
-
-  # 6. Metabase (Visualización de datos y dashboards opcional)
   metabase:
     image: ${METABASE_IMAGE}
-    container_name: dpl-metabase
     ports:
       - "3000:3000"
     environment:
       MB_DB_FILE: /metabase.db
-      MB_SITE_URL: http://metabase:3000
     volumes:
       - metabase_data:/metabase.db
-    networks:
-      - dpl_net
+    networks: [dpl_net]
     depends_on:
       - postgres
     profiles: ["viz"]
 
-  # 7. MinIO Client (Automatiza la subida de tu CSV de Speed Dating al bucket al arrancar)
-  mc:
-    image: ${MC_IMAGE}
-    container_name: dpl-mc
-    depends_on:
-      - minio
-    entrypoint: /bin/sh
-    command: -lc "
-        sleep 5 &&
-        mc alias set dpl http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
-        mc mb -p dpl/dpl || true &&
-        mc cp --recursive /seed/raw/ dpl/dpl/raw/ || true"
-    volumes:
-      - ./data:/seed:ro
-    networks:
-      - dpl_net
-    profiles: ["seed"]
