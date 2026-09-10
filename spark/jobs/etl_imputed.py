@@ -6,10 +6,18 @@ from sklearn.impute import IterativeImputer
 import pandas as pd
 
 # 1. Inicializar Spark con 4GB de RAM
-spark = (SparkSession.builder
-         .appName("SpeedDating_Imputed")
-         .config("spark.executor.memory", "4g")
-         .getOrCreate())
+spark = SparkSession.builder \
+    .appName("ETL Speed Dating - Dropped") \
+    .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
+    .config("spark.hadoop.fs.s3a.endpoint", "http://dpl-minio:9000") \
+    .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
+    .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
+    .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+    .getOrCreate()
+
+# Desactivar la generación de código para evitar el límite de los 64 KB de Janino
+spark.conf.set("spark.sql.codegen.wholeStage", "false")
 
 # 2. Configuración de MinIO (S3A)
 MINIO_ACCESS_KEY = "dpladmin"
@@ -25,7 +33,7 @@ hconf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
 hconf.set("fs.s3a.connection.ssl.enabled", "false")
 
 # 3. Cargar datos raw
-RAW_PATH = "s3a://dpl/raw/speeddating_proyecto.csv"
+RAW_PATH = "s3a://dpl/raw/speeddating.csv"
 df_raw = (spark.read
           .option("header", True)
           .option("inferSchema", True)
