@@ -107,7 +107,8 @@ services:
     profiles: ["base"]
 
   jupyter:
-    image: ${JUPYTER_IMAGE}
+    image: ${PROJECT_NAME:-dpl}-jupyter:python-3.11
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile.jupyter
