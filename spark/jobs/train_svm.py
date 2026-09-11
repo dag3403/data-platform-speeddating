@@ -63,7 +63,11 @@ lasso_cv = LogisticRegressionCV(
 lasso_cv.fit(X, y)
 
 coefs = pd.Series(lasso_cv.coef_[0], index=X.columns)
-selected_vars = coefs[coefs != 0].index.tolist()
+# Filtrar coeficientes no nulos y ordenar por importancia absoluta (de mayor a menor impacto)
+non_zero_coefs = coefs[coefs != 0]
+sorted_coefs = non_zero_coefs.reindex(non_zero_coefs.abs().sort_values(ascending=False).index)
+
+selected_vars = sorted_coefs.index.tolist()
 
 print(f"Variables seleccionadas por LASSO ({len(selected_vars)} en total):")
 
@@ -100,13 +104,18 @@ auc_val = roc_auc_score(y_test, y_prob)
 print(f"--- Métricas del Modelo SVM ({args.dataset}) ---")
 print(f"Accuracy: {accuracy:.4f} | Sensibilidad: {sensitivity:.4f} | Especificidad: {specificity:.4f} | AUC: {auc_val:.4f}")
 
-# 8. Guardar métricas en MinIO con nombre dinámico según el dataset elegido
+# 8. Guardar métricas y el ranking de variables más importantes en MinIO
+feature_importance_ranking = [
+    {"feature": feat, "lasso_coefficient": float(sorted_coefs[feat]), "abs_importance": float(abs(sorted_coefs[feat]))}
+    for feat in selected_vars
+]
+
 metrics_data = {
     "model": "SVM",
     "dataset_source": args.dataset,
     "kernel": "rbf",
     "num_features_selected": len(selected_vars),
-    "selected_features": selected_vars,
+    "feature_importance_ranking": feature_importance_ranking, # Guardas todas ordenadas por importancia para predecir match
     "metrics": {
         "accuracy": float(accuracy),
         "sensitivity": float(sensitivity),
@@ -124,7 +133,7 @@ metrics_data = {
 metrics_json_str = json.dumps(metrics_data, indent=4)
 METRICS_PATH = f"s3a://dpl/metrics/svm_metrics_{args.dataset}.json"
 
-print(f"Guardando métricas en MinIO: {METRICS_PATH} ...")
+print(f"Guardando métricas y ranking de importancia en MinIO: {METRICS_PATH} ...")
 
 sc = spark.sparkContext
 rdd = sc.parallelize([metrics_json_str])
