@@ -1,15 +1,12 @@
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.impute import IterativeImputer
-import pandas as pd
 
 # 1. Inicializar Spark con 4GB de RAM
 spark = SparkSession.builder \
     .appName("ETL Speed Dating - Dropped") \
     .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
-    .config("spark.hadoop.fs.s3a.endpoint", "http://dpl-minio:9000") \
+    .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
     .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
     .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
@@ -99,13 +96,25 @@ for col, (minv, maxv) in rangos.items():
 
 df = df.filter(mask)
 
-# 7. Eliminar todas las filas que contengan cualquier valor nulo restante
+# 7.1. Verificación de suma de columnas (9-14 y 21-26 en notación 1-based de R -> 8:14 y 20:26 en Python)
+cols_9_14 = df.columns[8:14]
+cols_21_26 = df.columns[20:26]
+
+sum_9_14 = sum(F.coalesce(F.col(c), F.lit(0.0)) for c in cols_9_14)
+sum_21_26 = sum(F.coalesce(F.col(c), F.lit(0.0)) for c in cols_21_26)
+
+condicion_9_14 = F.abs(sum_9_14 - 100.0) <= 0.01
+condicion_21_26 = F.abs(sum_21_26 - 100.0) <= 0.01
+
+df = df.filter(condicion_9_14 & condicion_21_26)
+
+# 8. Eliminar todas las filas que contengan cualquier valor nulo restante
 df_clean = df.dropna()
 
 print("Calculando conteo de filas en el clúster...")
-print(f"Filas finales tras eliminar nulos y outliers: {df_clean.count()}")
+print(f"Filas finales tras eliminar nulos, outliers y restricciones de suma: {df_clean.count()}")
 
-# 8. Guardar en capa curated separada
+# 9. Guardar en capa curated separada
 CURATED_DROPPED = "s3a://dpl/curated_dropped"
 print(f"Escribiendo resultado en {CURATED_DROPPED}...")
 
