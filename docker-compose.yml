@@ -108,7 +108,11 @@ services:
 
   jupyter:
     image: ${JUPYTER_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
     environment:
+      - SPARK_HOME=/usr/local/spark-3.5.0-bin-hadoop3
       - PYSPARK_SUBMIT_ARGS=--packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 --master spark://spark-master:7077 pyspark-shell
       - JUPYTER_TOKEN=${JUPYTER_TOKEN}
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
@@ -137,4 +141,3 @@ services:
     depends_on:
       - postgres
     profiles: ["viz"]
-

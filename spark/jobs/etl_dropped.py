@@ -1,6 +1,9 @@
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+import pandas as pd
 
 # 1. Inicializar Spark con 4GB de RAM
 spark = SparkSession.builder \
@@ -96,16 +99,19 @@ for col, (minv, maxv) in rangos.items():
 
 df = df.filter(mask)
 
-# 8. Eliminar todas las filas que contengan cualquier valor nulo restante (Complete Case Analysis)
+# 7. Eliminar todas las filas que contengan cualquier valor nulo restante
 df_clean = df.dropna()
 
+print("Calculando conteo de filas en el clúster...")
 print(f"Filas finales tras eliminar nulos y outliers: {df_clean.count()}")
 
-# 9. Guardar en capa curated separada
+# 8. Guardar en capa curated separada
 CURATED_DROPPED = "s3a://dpl/curated_dropped"
+print(f"Escribiendo resultado en {CURATED_DROPPED}...")
+
 (df_clean
  .write.mode("overwrite")
  .format("parquet")
  .save(CURATED_DROPPED))
 
-print("Escritura OK en:", CURATED_DROPPED)
+print("¡Escritura OK en:", CURATED_DROPPED)

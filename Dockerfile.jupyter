@@ -1,0 +1,11 @@
+FROM jupyter/pyspark-notebook:python-3.11
+
+USER root
+
+# Keep the Python API and the Spark distribution on the same 3.5.0 release.
+RUN python -m pip install --no-cache-dir --force-reinstall "pyspark==3.5.0"
+
+ENV SPARK_HOME=/usr/local/spark-3.5.0-bin-hadoop3
+ENV PATH="${SPARK_HOME}/bin:/opt/conda/bin:${PATH}"
+
+USER ${NB_USER}
