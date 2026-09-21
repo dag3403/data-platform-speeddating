@@ -113,20 +113,27 @@ contenga secretos reales.
 
 ```text
 .
+├── app.py
+├── artifacts/
+│   └── svm_inference_bundle.joblib
 ├── data/
 │   └── raw/
 │       └── speeddating.csv
+├── ml_service/
+│   ├── __init__.py
+│   └── production_pipeline.py
 ├── notebooks/
 │   ├── speeddating.ipynb
-│   ├── análisis_svm.ipynb
-│   └── .ipynb_checkpoints/
+│   └── análisis_svm.ipynb
 ├── spark/
 │   └── jobs/
 │       ├── etl_dropped.py
 │       ├── etl_imputed.py
 │       ├── load_minio_to_postgres.py
 │       └── train_svm.py
+├── Dockerfile.api
 ├── Dockerfile.jupyter
+├── requirements.txt
 ├── docker-compose.yml
 ├── .env
 └── .gitignore
@@ -136,7 +143,36 @@ El `.gitignore` excluye cachés de Python, entornos virtuales, volúmenes locale
 y el contenido del directorio raw (salvo `.gitkeep`). Esto evita versionar
 artefactos pesados y datos potencialmente sensibles.
 
-## 4. ETL con Spark
+## 4. Inferencia en producción con FastAPI
+
+El proyecto ahora incluye un servicio de inferencia que reutiliza exactamente la
+misma lógica de preprocessing que se emplea durante el entrenamiento. El flujo
+es:
+
+```text
+raw CSV
+  -> apply_etl_preprocessing()  (sin fit en producción)
+  -> IterativeImputer.fit(...) en entrenamiento
+  -> LogisticRegressionCV para LASSO
+  -> SVM RBF
+  -> artifacts/svm_inference_bundle.joblib
+  -> FastAPI /predict
+```
+
+La etapa `apply_etl_preprocessing()` conserva la estrategia existente de:
+- normalización de `gender`;
+- reemplazo de tokens nulos;
+- cast de string a float;
+- eliminación de `expected_num_interested_in_me`;
+- validación de rangos y sumas parciales;
+- imputación iterativa con `IterativeImputer` y los parámetros ya definidos.
+
+Durante la inferencia, el bundle serializado guarda el `imputer` ajustado y la
+lista de columnas dummy/seleccionadas para hacer únicamente `transform`, nunca
+`fit` ni `fit_transform` sobre producción. El servicio corre con Docker mediante
+`Dockerfile.api` y se exposa en el puerto `8000`.
+
+## 5. ETL con Spark
 
 Los jobs leen el CSV desde `s3a://dpl/raw/speeddating.csv`, configuran el
 endpoint S3A de MinIO (`http://minio:9000`) y escriben Parquet en el bucket
@@ -170,19 +206,13 @@ por eliminación:
 
 [etl_imputed.py](./spark/jobs/etl_imputed.py) comparte la normalización,
 validación de rangos y restricciones de suma de la rama anterior, pero conserva
-las filas con faltantes para imputarlas:
+las filas con faltantes. No ajusta ningún imputador: materializa la limpieza
+estructural y escribe el Parquet en `s3a://dpl/curated_imputed`.
 
-1. Convierte el DataFrame Spark a Pandas con `toPandas()`.
-2. Detecta las columnas numéricas.
-3. Aplica `sklearn.impute.IterativeImputer` con `max_iter=10` y
-   `random_state=42`.
-4. Reemplaza las columnas numéricas por los valores imputados.
-5. Reconstruye un DataFrame Spark y lo escribe como Parquet en
-   `s3a://dpl/curated_imputed`.
-
-Esta estrategia requiere que el dataset quepa en memoria del driver porque
-materializa todo el conjunto en Pandas. Para volúmenes mayores, convendría
-reemplazarla por una imputación nativa de Spark o por un proceso particionado.
+La imputación iterativa se ajusta en
+[train_svm.py](./spark/jobs/train_svm.py), después de separar train/test. Así
+los parámetros de `IterativeImputer` se aprenden únicamente con `X_train` y se
+reutilizan mediante `transform` sobre test y producción.
 
 ### Sobre la columna relacional `id`
 
@@ -278,17 +308,25 @@ ejecución con datos o dependencias diferentes.
 ### `train_svm.py`
 
 [train_svm.py](./spark/jobs/train_svm.py) permite seleccionar la fuente con
-`--dataset dropped|imputed`:
+`--dataset dropped|imputed` y es la única fuente de verdad para crear el bundle
+`artifacts/svm_inference_bundle.joblib`:
 
 1. Lee el Parquet curado desde MinIO y lo convierte a Pandas.
 2. Usa `match` como variable binaria objetivo.
-3. Aplica `LogisticRegressionCV` con penalización L1 (LASSO), validación
-   cruzada de 10 particiones y scoring ROC-AUC para seleccionar variables.
-4. Divide en entrenamiento/test `70/30`, estratificando por `match`.
-5. Balancea el entrenamiento mediante `RandomOverSampler`.
-6. Entrena `SVC(kernel="rbf", probability=True)`.
-7. Calcula accuracy, sensibilidad, especificidad, AUC y matriz de confusión.
-8. Serializa métricas y ranking de coeficientes LASSO en la ruta
+3. Divide primero en entrenamiento/test `70/30`, con `random_state=456` y
+   estratificación por `match`.
+4. Ajusta `IterativeImputer(max_iter=10, random_state=42)` únicamente sobre
+   `X_train`; transforma `X_train` y `X_test`.
+5. Ajusta `pd.get_dummies` y guarda `dummy_columns` para alinear exactamente
+   futuras entradas.
+6. Ajusta `LogisticRegressionCV` con penalización L1 (LASSO), validación
+   cruzada de 10 particiones y scoring ROC-AUC únicamente sobre training.
+7. Balancea únicamente el training mediante `RandomOverSampler`.
+8. Entrena `SVC(kernel="rbf", probability=True, random_state=42)`.
+9. Evalúa sobre `X_test` sin oversampling con accuracy, sensibilidad,
+   especificidad, AUC y matriz de confusión.
+10. Serializa el modelo, el imputador, `dummy_columns`, `selected_features` y
+    las métricas en el bundle. También escribe las métricas en la ruta
    `s3a://dpl/metrics/`. La implementación escribe el JSON como texto en
    `svm_output_temp_<dataset>`; el nombre `svm_metrics_<dataset>.json` aparece
    como ruta declarada, pero no se utiliza en la operación final de escritura.
