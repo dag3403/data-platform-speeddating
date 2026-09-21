@@ -1,3 +1,5 @@
+import os
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
@@ -7,8 +9,8 @@ spark = SparkSession.builder \
     .appName("ETL Speed Dating - Dropped") \
     .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
     .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
-    .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
-    .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
+    .config("spark.hadoop.fs.s3a.access.key", os.environ["AWS_ACCESS_KEY_ID"]) \
+    .config("spark.hadoop.fs.s3a.secret.key", os.environ["AWS_SECRET_ACCESS_KEY"]) \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
     .getOrCreate()
@@ -17,9 +19,9 @@ spark = SparkSession.builder \
 spark.conf.set("spark.sql.codegen.wholeStage", "false")
 
 # 2. Configuración de MinIO (S3A)
-MINIO_ACCESS_KEY = "dpladmin"
-MINIO_SECRET_KEY = "dpladmin123"
-MINIO_ENDPOINT   = "http://minio:9000"
+MINIO_ACCESS_KEY = os.environ["AWS_ACCESS_KEY_ID"]
+MINIO_SECRET_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 
 hconf = spark._jsc.hadoopConfiguration()
 hconf.set("fs.s3a.access.key", MINIO_ACCESS_KEY)
