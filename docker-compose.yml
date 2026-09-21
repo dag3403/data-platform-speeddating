@@ -66,6 +66,8 @@ services:
       - "8080:8080"
     volumes:
       - ./spark/jobs:/opt/bitnami/spark/jobs:ro
+      - ./ml_service:/opt/bitnami/spark/ml_service:ro
+      - ./artifacts:/opt/bitnami/spark/artifacts
     networks: [dpl_net]
     depends_on:
       - minio
@@ -128,6 +130,17 @@ services:
       - spark-master
       - minio
     profiles: ["base"]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    networks: [dpl_net]
+    volumes:
+      - ./artifacts:/app/artifacts
+    profiles: ["base", "inference"]
 
   metabase:
     image: ${METABASE_IMAGE}
