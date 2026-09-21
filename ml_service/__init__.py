@@ -1,9 +1,16 @@
 """Production inference utilities for the speed-dating SVM project."""
 
-from .production_pipeline import ARTIFACTS_DIR, load_model_bundle, predict_from_dataframe, transform_features
+from .production_pipeline import (
+    ARTIFACTS_DIR,
+    StructuralValidationError,
+    load_model_bundle,
+    predict_from_dataframe,
+    transform_features,
+)
 
 __all__ = [
     "ARTIFACTS_DIR",
+    "StructuralValidationError",
     "load_model_bundle",
     "predict_from_dataframe",
     "transform_features",
