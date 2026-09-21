@@ -5,6 +5,8 @@ from .production_pipeline import (
     StructuralValidationError,
     load_model_bundle,
     predict_from_dataframe,
+    predict_validated_dataframe,
+    split_valid_production_records,
     transform_features,
 )
 
@@ -13,5 +15,7 @@ __all__ = [
     "StructuralValidationError",
     "load_model_bundle",
     "predict_from_dataframe",
+    "predict_validated_dataframe",
+    "split_valid_production_records",
     "transform_features",
 ]
