@@ -1,14 +1,29 @@
 from __future__ import annotations
 
-from pathlib import Path
+from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ml_service.production_pipeline import load_model_bundle, predict_from_dataframe
+from ml_service.production_pipeline import (
+    StructuralValidationError,
+    load_model_bundle,
+    predict_from_dataframe,
+)
 
-app = FastAPI(title="Speed Dating SVM Inference API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.model_bundle = load_model_bundle()
+    yield
+
+
+app = FastAPI(
+    title="Speed Dating SVM Inference API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 
 class PredictionRequest(BaseModel):
@@ -16,23 +31,33 @@ class PredictionRequest(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
-    bundle_path = Path(__file__).resolve().parent / "artifacts" / "svm_inference_bundle.joblib"
+def health(request: Request) -> dict[str, object]:
+    bundle = getattr(request.app.state, "model_bundle", None)
+    if bundle is None:
+        raise HTTPException(status_code=503, detail="Model bundle is not loaded")
     return {
         "status": "ok",
-        "model_bundle_exists": bundle_path.exists(),
+        "model_loaded": True,
+        "algorithm": bundle.get("metadata", {}).get("algorithm", "unknown"),
+        "selected_features": len(bundle.get("selected_features", [])),
     }
 
 
 @app.post("/predict")
-def predict(request: PredictionRequest) -> dict[str, object]:
+def predict(request: PredictionRequest, http_request: Request) -> dict[str, object]:
     if not request.records:
         raise HTTPException(status_code=400, detail="At least one record is required")
 
     try:
-        bundle = load_model_bundle()
+        bundle = getattr(http_request.app.state, "model_bundle", None)
+        if bundle is None:
+            raise HTTPException(status_code=503, detail="Model bundle is not loaded")
         dataframe = pd.DataFrame.from_records(request.records)
         result = predict_from_dataframe(dataframe, bundle)
+    except StructuralValidationError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc), "invalid_records": exc.errors}) from exc
+    except HTTPException:
+        raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail="Model bundle is not available. Train the model first.") from exc
     except Exception as exc:  # pragma: no cover - defensive guard for deployment
