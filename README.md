@@ -145,32 +145,114 @@ artefactos pesados y datos potencialmente sensibles.
 
 ## 4. Inferencia en producción con FastAPI
 
-El proyecto ahora incluye un servicio de inferencia que reutiliza exactamente la
-misma lógica de preprocessing que se emplea durante el entrenamiento. El flujo
+El proyecto incluye un servicio FastAPI que consume exclusivamente el bundle
+generado por `train_svm.py`. La API no entrena modelos, no ejecuta Spark y no
+recalcula parámetros estadísticos durante una petición. El flujo de producción
 es:
 
 ```text
-raw CSV
-  -> apply_etl_preprocessing()  (sin fit en producción)
-  -> IterativeImputer.fit(...) en entrenamiento
-  -> LogisticRegressionCV para LASSO
-  -> SVM RBF
-  -> artifacts/svm_inference_bundle.joblib
-  -> FastAPI /predict
+datos nuevos
+  -> normalización y validación estructural
+  -> imputer.transform()
+  -> pd.get_dummies() + alineación con dummy_columns
+  -> selección mediante selected_features
+  -> SVM.predict() / SVM.predict_proba()
+  -> respuesta JSON de /predict
 ```
 
-La etapa `apply_etl_preprocessing()` conserva la estrategia existente de:
+La función `transform_features()` de
+[production_pipeline.py](./ml_service/production_pipeline.py) comparte con
+entrenamiento las operaciones estructurales que no aprenden parámetros:
+
 - normalización de `gender`;
 - reemplazo de tokens nulos;
 - cast de string a float;
 - eliminación de `expected_num_interested_in_me`;
-- validación de rangos y sumas parciales;
-- imputación iterativa con `IterativeImputer` y los parámetros ya definidos.
+- validación de rangos;
+- validación de las sumas de preferencias e importancias.
 
-Durante la inferencia, el bundle serializado guarda el `imputer` ajustado y la
-lista de columnas dummy/seleccionadas para hacer únicamente `transform`, nunca
-`fit` ni `fit_transform` sobre producción. El servicio corre con Docker mediante
-`Dockerfile.api` y se exposa en el puerto `8000`.
+Los valores faltantes permitidos no se eliminan durante esta etapa. Llegan al
+`IterativeImputer`, que en producción ejecuta únicamente `transform()` con el
+imputador aprendido durante el entrenamiento. No se ejecuta `fit()`,
+`fit_transform()`, LASSO, `RandomOverSampler` ni entrenamiento del SVM en la
+API.
+
+### Bundle de inferencia
+
+`train_svm.py` crea
+`artifacts/svm_inference_bundle.joblib`. El bundle contiene como mínimo:
+
+| Clave | Contenido |
+|---|---|
+| `model` | SVM `SVC` entrenado |
+| `imputer` | `IterativeImputer` ajustado con `X_train` |
+| `dummy_columns` | Columnas resultantes del `pd.get_dummies()` durante training |
+| `selected_features` | Variables seleccionadas por LASSO |
+| `preprocessor` | Columnas numéricas, columnas originales y referencias del preprocessing |
+| `metrics` | Accuracy, sensibilidad, especificidad, AUC y matriz de confusión |
+| `metadata` | Algoritmo, kernel y semillas utilizadas |
+
+Las columnas dummy se determinan durante training. En inferencia se vuelve a
+codificar la entrada y después se aplica `reindex(columns=dummy_columns,
+fill_value=0.0)`. Así, una categoría ausente o nueva no cambia el número, el
+nombre ni el orden de las columnas que recibe el SVM. Después se conserva
+únicamente `selected_features`.
+
+### Carga del modelo y endpoints
+
+FastAPI carga el bundle una sola vez en el `lifespan` de la aplicación y lo
+guarda en `app.state.model_bundle`. Tanto `/health` como `/predict` reutilizan
+esa instancia en memoria; el bundle no se vuelve a leer del disco en cada
+petición.
+
+`GET /health` devuelve el estado de carga, el algoritmo y el número de variables
+seleccionadas. `POST /predict` recibe:
+
+```json
+{
+  "records": [
+    {
+      "age": 25,
+      "wave": 1,
+      "gender": "female"
+    }
+  ]
+}
+```
+
+La respuesta contiene una predicción y una probabilidad por cada registro:
+
+```json
+{
+  "predictions": [0],
+  "probabilities": [0.201375]
+}
+```
+
+La API conserva el orden de entrada y devuelve exactamente una salida por
+registro procesado. Un registro estructuralmente inválido no se elimina
+silenciosamente: `/predict` devuelve HTTP 400 con su índice y las razones de
+invalidación, por ejemplo:
+
+```json
+{
+  "detail": {
+    "message": "Input contains structurally invalid records",
+    "invalid_records": [
+      {
+        "index": 0,
+        "reasons": ["age must be between 18 and 55"]
+      }
+    ]
+  }
+}
+```
+
+Los registros con valores missing permitidos sí continúan hasta la imputación y
+pueden ser predichos normalmente. El contenedor API no incluye Spark ni los
+datasets: `Dockerfile.api` instala únicamente las dependencias de serving y
+modelo, copia `app.py` y `ml_service`, y `docker-compose.yml` monta
+`./artifacts` en `/app/artifacts`.
 
 ## 5. ETL con Spark
 
@@ -331,6 +413,12 @@ ejecución con datos o dependencias diferentes.
    `svm_output_temp_<dataset>`; el nombre `svm_metrics_<dataset>.json` aparece
    como ruta declarada, pero no se utiliza en la operación final de escritura.
 
+`toPandas()` transfiere el dataset curado al driver de Spark. Todo el
+entrenamiento posterior de scikit-learn (`IterativeImputer`, LASSO,
+`RandomOverSampler` y `SVC`) se ejecuta en la memoria del driver, no en los
+workers. Esta decisión se conserva para el tamaño actual del dataset; si el
+volumen crece, debe revisarse la estrategia antes de aumentar el dataset.
+
 El paso Spark-to-Pandas también impone una limitación de memoria para datasets
 grandes. Las dependencias de modelado (`scikit-learn`, `imbalanced-learn` y
 `pandas`) deben estar disponibles en el entorno desde el que se ejecute el
@@ -433,8 +521,9 @@ docker compose exec spark-master spark-submit `
 ```
 
 Confirme que ambas rutas Parquet existan en MinIO antes de continuar. Los jobs
-usan credenciales configuradas en el código y en Compose; en un despliegue real
-deben unificarse mediante variables de entorno o un gestor de secretos.
+leen las credenciales de MinIO desde `AWS_ACCESS_KEY_ID` y
+`AWS_SECRET_ACCESS_KEY`, proporcionadas por Compose mediante las variables de
+entorno correspondientes. En un despliegue real, use un gestor de secretos.
 
 ### 8.4 Entrenar y guardar métricas
 
@@ -486,7 +575,28 @@ revisarse antes de usarlo como proceso incremental.
 4. Sincronice el esquema y confirme las tablas en `public`.
 5. Cree preguntas, gráficos y un dashboard con las vistas sugeridas.
 
-### 8.7 Apagado y limpieza
+### 8.7 Ejecutar la API de inferencia
+
+Después de generar `artifacts/svm_inference_bundle.joblib` con el entrenamiento:
+
+```powershell
+docker compose --profile inference up -d --build
+Invoke-RestMethod http://localhost:8000/health
+```
+
+Para probar una predicción, envíe una lista de registros al endpoint:
+
+```powershell
+Invoke-RestMethod `
+  -Uri http://localhost:8000/predict `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"records":[{"age":25,"wave":1,"gender":"female","match":0}]}'
+```
+
+La API devuelve una predicción y una probabilidad por cada registro válido.
+
+### 8.8 Apagado y limpieza
 
 Para detener sin borrar datos:
 
@@ -501,10 +611,42 @@ MinIO, PostgreSQL y Metabase):
 docker compose down -v
 ```
 
-## 9. Operación, limitaciones y siguientes pasos
+## 9. Pruebas y operación
 
-- Externalizar todas las credenciales de los scripts ETL, que actualmente
-  contienen valores por defecto codificados.
+La suite de producción está en
+[tests/test_production.py](./tests/test_production.py). Comprueba el bundle,
+la inferencia con missing sin reajustar el imputador, la validación de registros
+inválidos, la invariancia frente al orden de columnas y los endpoints FastAPI.
+
+Desde la raíz del repositorio se puede ejecutar:
+
+```powershell
+py -3 -m unittest discover -s tests -v
+py -3 -m compileall -q app.py ml_service spark\jobs tests
+docker build -f Dockerfile.api -t speeddating-api:test .
+docker compose --profile inference up -d --build
+```
+
+### Validaciones estructurales y valores missing
+
+`etl_imputed.py` y `production_pipeline.py` utilizan las mismas reglas no
+aprendidas. Las variables de suma son exactamente:
+
+- Preferencias: `pref_o_attractive`, `pref_o_sincere`,
+  `pref_o_intelligence`, `pref_o_funny`, `pref_o_ambitious`,
+  `pref_o_shared_interests`.
+- Importancias: `attractive_important`, `sincere_important`,
+  `intellicence_important`, `funny_important`, `ambtition_important`,
+  `shared_interests_important`.
+
+En cada grupo, si falta al menos una de las seis variables, la fila se conserva
+para que el imputador trate el missing. Si están presentes las seis, la suma
+debe ser `100` con tolerancia `0.01`; solo entonces se descarta o rechaza la
+fila cuando la suma es inválida. Las validaciones de rangos siguen la misma
+regla: un missing no es un valor fuera de rango.
+
+### Seguridad, escalabilidad y siguientes pasos
+
 - Añadir healthchecks y reintentos para que `depends_on` no dependa solo del
   orden de creación.
 - Versionar un esquema SQL o migraciones si se requiere un modelo relacional
