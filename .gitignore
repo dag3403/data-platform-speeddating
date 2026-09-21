@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 venv/
 .env
+.ipynb_checkpoints/
 
 # Datos locales pesados (opcional si son muy grandes, 
 # aunque si tu CSV de speed dating pesa poco puedes dejarlo, 
