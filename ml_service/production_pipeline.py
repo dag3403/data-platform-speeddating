@@ -10,10 +10,60 @@ import pandas as pd
 TARGET_COLUMN = "match"
 MISSING_TOKENS = ["", "NA", "NaN", "nan", "None", "NULL", "null", "?"]
 ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "artifacts"
+PREFERENCE_SUM_COLUMNS = (
+    "pref_o_attractive",
+    "pref_o_sincere",
+    "pref_o_intelligence",
+    "pref_o_funny",
+    "pref_o_ambitious",
+    "pref_o_shared_interests",
+)
+IMPORTANCE_SUM_COLUMNS = (
+    "attractive_important",
+    "sincere_important",
+    "intellicence_important",
+    "funny_important",
+    "ambtition_important",
+    "shared_interests_important",
+)
+RANGES = {
+    "age": (18, 55), "wave": (1, 21), "gender": (0, 1), "age_o": (18, 55),
+    "d_age": (0, 37), "samerace": (0, 1), "importance_same_race": (0, 10),
+    "importance_same_religion": (0, 10), "pref_o_attractive": (0, 100),
+    "pref_o_sincere": (0, 100), "pref_o_intelligence": (0, 100),
+    "pref_o_funny": (0, 100), "pref_o_ambitious": (0, 100),
+    "pref_o_shared_interests": (0, 100), "attractive_o": (0, 10),
+    "sinsere_o": (0, 10), "intelligence_o": (0, 10), "funny_o": (0, 10),
+    "ambitous_o": (0, 10), "shared_interests_o": (0, 10),
+    "attractive_important": (0, 100), "sincere_important": (0, 100),
+    "intellicence_important": (0, 100), "funny_important": (0, 100),
+    "ambtition_important": (0, 100), "shared_interests_important": (0, 100),
+    "attractive": (0, 10), "sincere": (0, 10), "intelligence": (0, 10),
+    "funny": (0, 10), "ambition": (0, 10), "attractive_partner": (0, 10),
+    "sincere_partner": (0, 10), "intelligence_partner": (0, 10),
+    "funny_partner": (0, 10), "ambition_partner": (0, 10),
+    "shared_interests_partner": (0, 10), "sports": (0, 10),
+    "tvsports": (0, 10), "exercise": (0, 10), "dining": (0, 10),
+    "museums": (0, 10), "art": (0, 10), "hiking": (0, 10), "gaming": (0, 10),
+    "clubbing": (0, 10), "reading": (0, 10), "tv": (0, 10), "theater": (0, 10),
+    "movies": (0, 10), "concerts": (0, 10), "music": (0, 10),
+    "shopping": (0, 10), "yoga": (0, 10), "interests_correlate": (-1, 1),
+    "expected_happy_with_sd_people": (0, 10), "expected_num_matches": (0, 20),
+    "like": (0, 10), "guess_prob_liked": (0, 10), "met": (0, 1),
+    "match": (0, 1),
+}
 
 
-def apply_structural_preprocessing(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply only the non-learned cleaning shared with etl_imputed.py."""
+class StructuralValidationError(ValueError):
+    def __init__(self, errors: list[dict[str, Any]]) -> None:
+        self.errors = errors
+        super().__init__("Input contains structurally invalid records")
+
+
+def _structural_preprocessing(
+    df: pd.DataFrame, *, drop_invalid: bool
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Apply shared non-learned cleaning and report rejected input rows."""
     processed = df.copy()
 
     if "gender" in processed.columns:
@@ -33,53 +83,54 @@ def apply_structural_preprocessing(df: pd.DataFrame) -> pd.DataFrame:
     if "expected_num_interested_in_me" in processed.columns:
         processed = processed.drop(columns=["expected_num_interested_in_me"])
 
-    ranges = {
-        "age": (18, 55), "wave": (1, 21), "gender": (0, 1), "age_o": (18, 55),
-        "d_age": (0, 37), "samerace": (0, 1), "importance_same_race": (0, 10),
-        "importance_same_religion": (0, 10), "pref_o_attractive": (0, 100),
-        "pref_o_sincere": (0, 100), "pref_o_intelligence": (0, 100),
-        "pref_o_funny": (0, 100), "pref_o_ambitious": (0, 100),
-        "pref_o_shared_interests": (0, 100), "attractive_o": (0, 10),
-        "sinsere_o": (0, 10), "intelligence_o": (0, 10), "funny_o": (0, 10),
-        "ambitous_o": (0, 10), "shared_interests_o": (0, 10),
-        "attractive_important": (0, 100), "sincere_important": (0, 100),
-        "intellicence_important": (0, 100), "funny_important": (0, 100),
-        "ambtition_important": (0, 100), "shared_interests_important": (0, 100),
-        "attractive": (0, 10), "sincere": (0, 10), "intelligence": (0, 10),
-        "funny": (0, 10), "ambition": (0, 10), "attractive_partner": (0, 10),
-        "sincere_partner": (0, 10), "intelligence_partner": (0, 10),
-        "funny_partner": (0, 10), "ambition_partner": (0, 10),
-        "shared_interests_partner": (0, 10), "sports": (0, 10),
-        "tvsports": (0, 10), "exercise": (0, 10), "dining": (0, 10),
-        "museums": (0, 10), "art": (0, 10), "hiking": (0, 10), "gaming": (0, 10),
-        "clubbing": (0, 10), "reading": (0, 10), "tv": (0, 10), "theater": (0, 10),
-        "movies": (0, 10), "concerts": (0, 10), "music": (0, 10),
-        "shopping": (0, 10), "yoga": (0, 10), "interests_correlate": (-1, 1),
-        "expected_happy_with_sd_people": (0, 10), "expected_num_matches": (0, 20),
-        "like": (0, 10), "guess_prob_liked": (0, 10), "met": (0, 1),
-        "match": (0, 1),
-    }
-    mask = pd.Series(True, index=processed.index)
-    for column, (minimum, maximum) in ranges.items():
+    invalid_reasons: dict[Any, list[str]] = {index: [] for index in processed.index}
+    for column, (minimum, maximum) in RANGES.items():
         if column in processed.columns:
-            mask &= processed[column].isna() | processed[column].between(minimum, maximum)
-    processed = processed.loc[mask].copy()
+            invalid = processed[column].notna() & ~processed[column].between(minimum, maximum)
+            for index in processed.index[invalid]:
+                invalid_reasons[index].append(
+                    f"{column} must be between {minimum} and {maximum}"
+                )
 
-    first_sum_columns = list(processed.columns[8:14])
-    second_sum_columns = list(processed.columns[20:26])
-    for columns in (first_sum_columns, second_sum_columns):
-        if len(columns) == 6:
-            has_missing = processed[columns].isna().any(axis=1)
-            sums = processed[columns].fillna(0).sum(axis=1)
-            valid_sum = (sums - 100.0).abs() <= 0.01
-            processed = processed.loc[has_missing | valid_sum].copy()
+    for columns, label in (
+        (PREFERENCE_SUM_COLUMNS, "preference percentages"),
+        (IMPORTANCE_SUM_COLUMNS, "importance percentages"),
+    ):
+        if all(column in processed.columns for column in columns):
+            has_missing = processed[list(columns)].isna().any(axis=1)
+            sums = processed[list(columns)].fillna(0).sum(axis=1)
+            invalid_sum = ~has_missing & ((sums - 100.0).abs() > 0.01)
+            for index in processed.index[invalid_sum]:
+                invalid_reasons[index].append(f"{label} must sum to 100")
 
+    errors = [
+        {"index": index, "reasons": reasons}
+        for index, reasons in invalid_reasons.items()
+        if reasons
+    ]
+    if drop_invalid:
+        valid_indices = [index for index, reasons in invalid_reasons.items() if not reasons]
+        processed = processed.loc[valid_indices].copy()
+    return processed, errors
+
+
+def apply_structural_preprocessing(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply shared structural cleaning for training, dropping invalid rows."""
+    processed, _ = _structural_preprocessing(df, drop_invalid=True)
+    return processed
+
+
+def validate_production_records(df: pd.DataFrame) -> pd.DataFrame:
+    """Validate records without dropping them, preserving missing values."""
+    processed, errors = _structural_preprocessing(df, drop_invalid=False)
+    if errors:
+        raise StructuralValidationError(errors)
     return processed
 
 
 def transform_features(df: pd.DataFrame, preprocessor: dict[str, Any]) -> pd.DataFrame:
     """Transform production records using only fitted objects from the bundle."""
-    cleaned = apply_structural_preprocessing(df)
+    cleaned = validate_production_records(df)
     if TARGET_COLUMN in cleaned.columns:
         cleaned = cleaned.drop(columns=[TARGET_COLUMN])
 
