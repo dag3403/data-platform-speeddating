@@ -21,8 +21,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket", default=os.getenv("MINIO_BUCKET", "dpl"))
     parser.add_argument("--prefix", default=os.getenv("MINIO_PREFIX", ""))
     parser.add_argument("--minio-endpoint", default=os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
-    parser.add_argument("--minio-access-key", default=os.getenv("MINIO_ACCESS_KEY", "dpladmin"))
-    parser.add_argument("--minio-secret-key", default=os.getenv("MINIO_SECRET_KEY", "dpladmin123"))
+    parser.add_argument(
+        "--minio-access-key",
+        default=os.getenv("MINIO_ACCESS_KEY", os.getenv("AWS_ACCESS_KEY_ID")),
+    )
+    parser.add_argument(
+        "--minio-secret-key",
+        default=os.getenv("MINIO_SECRET_KEY", os.getenv("AWS_SECRET_ACCESS_KEY")),
+    )
     parser.add_argument("--postgres-host", default=os.getenv("POSTGRES_HOST", "postgres"))
     parser.add_argument("--postgres-port", default=os.getenv("POSTGRES_PORT", "5432"))
     parser.add_argument("--postgres-database", default=os.getenv("POSTGRES_DB", "dpl"))
