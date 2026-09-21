@@ -1,17 +1,16 @@
+import os
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.impute import IterativeImputer
-import pandas as pd
 
 # 1. Inicializar Spark con 4GB de RAM
 spark = SparkSession.builder \
     .appName("ETL Speed Dating - Imputed") \
     .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
     .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000") \
-    .config("spark.hadoop.fs.s3a.access.key", "minioadmin") \
-    .config("spark.hadoop.fs.s3a.secret.key", "minioadmin") \
+    .config("spark.hadoop.fs.s3a.access.key", os.environ["AWS_ACCESS_KEY_ID"]) \
+    .config("spark.hadoop.fs.s3a.secret.key", os.environ["AWS_SECRET_ACCESS_KEY"]) \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
     .getOrCreate()
@@ -20,9 +19,9 @@ spark = SparkSession.builder \
 spark.conf.set("spark.sql.codegen.wholeStage", "false")
 
 # 2. Configuración de MinIO (S3A)
-MINIO_ACCESS_KEY = "dpladmin"
-MINIO_SECRET_KEY = "dpladmin123"
-MINIO_ENDPOINT   = "http://minio:9000"
+MINIO_ACCESS_KEY = os.environ["AWS_ACCESS_KEY_ID"]
+MINIO_SECRET_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 
 hconf = spark._jsc.hadoopConfiguration()
 hconf.set("fs.s3a.access.key", MINIO_ACCESS_KEY)
@@ -108,23 +107,27 @@ sum_21_26 = sum(F.coalesce(F.col(c), F.lit(0.0)) for c in cols_21_26)
 
 condicion_9_14 = F.abs(sum_9_14 - 100.0) <= 0.01
 condicion_21_26 = F.abs(sum_21_26 - 100.0) <= 0.01
+faltante_9_14 = F.reduce(
+    [F.col(c).isNull() for c in cols_9_14],
+    F.lit(False),
+    lambda acumulado, faltante: acumulado | faltante,
+)
+faltante_21_26 = F.reduce(
+    [F.col(c).isNull() for c in cols_21_26],
+    F.lit(False),
+    lambda acumulado, faltante: acumulado | faltante,
+)
 
-df = df.filter(condicion_9_14 & condicion_21_26)
+df = df.filter((faltante_9_14 | condicion_9_14) & (faltante_21_26 | condicion_21_26))
 
-# 8. Imputación Iterativa (Puente Spark -> Pandas -> Scikit-Learn -> Spark)
+# 8. Materializar únicamente la limpieza estructural.
+#
+# La imputación aprendida se realiza en train_svm.py después del split
+# train/test para evitar data leakage. Este dataset conserva los nulos.
 df_pd = df.toPandas()
-num_cols = df_pd.select_dtypes(include=['number']).columns.tolist()
-df_num = df_pd[num_cols]
-
-imputer = IterativeImputer(max_iter=10, random_state=42)
-df_imputed_array = imputer.fit_transform(df_num)
-
-df_imputed = pd.DataFrame(df_imputed_array, columns=num_cols)
-df_pd[num_cols] = df_imputed
-
 df_clean = spark.createDataFrame(df_pd)
 
-print(f"Filas finales tras imputación iterativa, outliers y restricciones de suma: {df_clean.count()}")
+print(f"Filas finales tras limpieza estructural y restricciones de suma: {df_clean.count()}")
 
 # 9. Guardar en capa curated separada
 CURATED_IMPUTED = "s3a://dpl/curated_imputed"
