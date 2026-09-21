@@ -7,9 +7,9 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ml_service.production_pipeline import (
-    StructuralValidationError,
     load_model_bundle,
-    predict_from_dataframe,
+    predict_validated_dataframe,
+    split_valid_production_records,
 )
 
 
@@ -53,9 +53,18 @@ def predict(request: PredictionRequest, http_request: Request) -> dict[str, obje
         if bundle is None:
             raise HTTPException(status_code=503, detail="Model bundle is not loaded")
         dataframe = pd.DataFrame.from_records(request.records)
-        result = predict_from_dataframe(dataframe, bundle)
-    except StructuralValidationError as exc:
-        raise HTTPException(status_code=400, detail={"message": str(exc), "invalid_records": exc.errors}) from exc
+        valid_records, invalid_records = split_valid_production_records(dataframe)
+        if valid_records.empty:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "No valid records available for prediction",
+                    "invalid_records": invalid_records,
+                },
+            )
+        result = predict_validated_dataframe(valid_records, bundle)
+        predictions = result["predictions"]
+        probabilities = result["probabilities"]
     except HTTPException:
         raise
     except FileNotFoundError as exc:
@@ -64,8 +73,17 @@ def predict(request: PredictionRequest, http_request: Request) -> dict[str, obje
         raise HTTPException(status_code=400, detail=f"Prediction failed: {exc}") from exc
 
     return {
-        "predictions": result["predictions"].astype(int).tolist(),
-        "probabilities": result["probabilities"].round(6).tolist(),
+        "predictions": [
+            {
+                "index": int(index),
+                "prediction": int(prediction),
+                "probability": round(float(probability), 6),
+            }
+            for index, prediction, probability in zip(
+                valid_records.index, predictions, probabilities
+            )
+        ],
+        "invalid_records": invalid_records,
     }
 
 
