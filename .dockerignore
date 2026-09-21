@@ -1,0 +1,12 @@
+.git
+.env
+__pycache__
+*.py[cod]
+*.ipynb
+notebooks
+data
+spark
+postgres
+README.md
+tests
+Dockerfile.jupyter
