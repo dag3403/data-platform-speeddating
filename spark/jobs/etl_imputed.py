@@ -4,6 +4,15 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
 
+PREFERENCE_SUM_COLUMNS = [
+    "pref_o_attractive", "pref_o_sincere", "pref_o_intelligence",
+    "pref_o_funny", "pref_o_ambitious", "pref_o_shared_interests",
+]
+IMPORTANCE_SUM_COLUMNS = [
+    "attractive_important", "sincere_important", "intellicence_important",
+    "funny_important", "ambtition_important", "shared_interests_important",
+]
+
 # 1. Inicializar Spark con 4GB de RAM
 spark = SparkSession.builder \
     .appName("ETL Speed Dating - Imputed") \
@@ -98,25 +107,27 @@ for col, (minv, maxv) in rangos.items():
 
 df = df.filter(mask)
 
-# 7.1. Verificación de suma de columnas (9-14 y 21-26 en notación 1-based de R -> 8:14 y 20:26 en Python)
-cols_9_14 = df.columns[8:14]
-cols_21_26 = df.columns[20:26]
+# 7.1. Verificación explícita de las sumas de preferencias e importancia
+cols_9_14 = [c for c in PREFERENCE_SUM_COLUMNS if c in df.columns]
+cols_21_26 = [c for c in IMPORTANCE_SUM_COLUMNS if c in df.columns]
 
 sum_9_14 = sum(F.coalesce(F.col(c), F.lit(0.0)) for c in cols_9_14)
 sum_21_26 = sum(F.coalesce(F.col(c), F.lit(0.0)) for c in cols_21_26)
 
-condicion_9_14 = F.abs(sum_9_14 - 100.0) <= 0.01
-condicion_21_26 = F.abs(sum_21_26 - 100.0) <= 0.01
-faltante_9_14 = F.reduce(
-    [F.col(c).isNull() for c in cols_9_14],
-    F.lit(False),
-    lambda acumulado, faltante: acumulado | faltante,
-)
-faltante_21_26 = F.reduce(
-    [F.col(c).isNull() for c in cols_21_26],
-    F.lit(False),
-    lambda acumulado, faltante: acumulado | faltante,
-)
+condicion_9_14 = F.lit(True)
+condicion_21_26 = F.lit(True)
+faltante_9_14 = F.lit(False)
+faltante_21_26 = F.lit(False)
+if len(cols_9_14) == len(PREFERENCE_SUM_COLUMNS):
+    faltante_9_14 = sum(F.col(c).isNull().cast("int") for c in cols_9_14) > 0
+    condicion_9_14 = (
+        faltante_9_14 | (F.abs(sum_9_14 - 100.0) <= 0.01)
+    )
+if len(cols_21_26) == len(IMPORTANCE_SUM_COLUMNS):
+    faltante_21_26 = sum(F.col(c).isNull().cast("int") for c in cols_21_26) > 0
+    condicion_21_26 = (
+        faltante_21_26 | (F.abs(sum_21_26 - 100.0) <= 0.01)
+    )
 
 df = df.filter((faltante_9_14 | condicion_9_14) & (faltante_21_26 | condicion_21_26))
 
