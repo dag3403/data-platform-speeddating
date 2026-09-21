@@ -128,6 +128,16 @@ def validate_production_records(df: pd.DataFrame) -> pd.DataFrame:
     return processed
 
 
+def split_valid_production_records(
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Return valid records and structural errors without hiding invalid rows."""
+    processed, errors = _structural_preprocessing(df, drop_invalid=False)
+    invalid_indices = {error["index"] for error in errors}
+    valid = processed.loc[~processed.index.isin(invalid_indices)].copy()
+    return valid, errors
+
+
 def transform_features(df: pd.DataFrame, preprocessor: dict[str, Any]) -> pd.DataFrame:
     """Transform production records using only fitted objects from the bundle."""
     cleaned = validate_production_records(df)
@@ -169,3 +179,10 @@ def predict_from_dataframe(
         "predictions": model.predict(transformed).astype(int),
         "probabilities": model.predict_proba(transformed)[:, 1],
     }
+
+
+def predict_validated_dataframe(
+    df: pd.DataFrame, bundle: dict[str, Any]
+) -> dict[str, np.ndarray]:
+    """Predict a dataframe already separated from structurally invalid rows."""
+    return predict_from_dataframe(df, bundle)
