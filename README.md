@@ -220,24 +220,50 @@ seleccionadas. `POST /predict` recibe:
 }
 ```
 
-La respuesta contiene una predicción y una probabilidad por cada registro:
+La respuesta contiene una predicción y una probabilidad por cada registro
+estructuralmente válido. Cada resultado conserva el índice original del
+registro recibido y `invalid_records` informa de los registros rechazados:
 
 ```json
 {
-  "predictions": [0],
-  "probabilities": [0.201375]
+  "predictions": [
+    {
+      "index": 0,
+      "prediction": 0,
+      "probability": 0.201375
+    }
+  ],
+  "invalid_records": []
 }
 ```
 
-La API conserva el orden de entrada y devuelve exactamente una salida por
-registro procesado. Un registro estructuralmente inválido no se elimina
-silenciosamente: `/predict` devuelve HTTP 400 con su índice y las razones de
-invalidación, por ejemplo:
+La API conserva el orden de entrada entre los registros válidos y devuelve
+exactamente una salida por cada uno. En un batch mixto, los válidos se predicen
+y los inválidos no llegan al imputador ni al SVM:
+
+```json
+{
+  "predictions": [
+    {"index": 0, "prediction": 1, "probability": 0.83},
+    {"index": 2, "prediction": 0, "probability": 0.27}
+  ],
+  "invalid_records": [
+    {
+      "index": 1,
+      "reasons": ["age must be between 18 and 55"]
+    }
+  ]
+}
+```
+
+Un registro estructuralmente inválido no se elimina silenciosamente. Si todos
+los registros del batch son inválidos, no se invoca el modelo y `/predict`
+devuelve HTTP 400 con el índice y las razones de cada registro:
 
 ```json
 {
   "detail": {
-    "message": "Input contains structurally invalid records",
+    "message": "No valid records available for prediction",
     "invalid_records": [
       {
         "index": 0,
@@ -249,10 +275,11 @@ invalidación, por ejemplo:
 ```
 
 Los registros con valores missing permitidos sí continúan hasta la imputación y
-pueden ser predichos normalmente. El contenedor API no incluye Spark ni los
-datasets: `Dockerfile.api` instala únicamente las dependencias de serving y
-modelo, copia `app.py` y `ml_service`, y `docker-compose.yml` monta
-`./artifacts` en `/app/artifacts`.
+pueden ser predichos normalmente. Un batch vacío conserva la validación actual
+y devuelve HTTP 400. El contenedor API no incluye Spark ni los datasets:
+`Dockerfile.api` instala únicamente las dependencias de serving y modelo,
+copia `app.py` y `ml_service`, y `docker-compose.yml` monta `./artifacts` en
+`/app/artifacts`.
 
 ## 5. ETL con Spark
 
